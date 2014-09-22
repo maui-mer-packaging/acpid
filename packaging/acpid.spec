@@ -14,8 +14,8 @@ Release:    1
 Group:      System/Daemons
 License:    GPLv2+ and BSD
 ExclusiveArch:  ia64 x86_64 %{ix86}
-URL:        http://tedfelix.com/linux/acpid-netlink.html
-Source0:    http://tedfelix.com/linux/acpid-%{version}.tar.gz
+URL:        http://sourceforge.net/projects/acpid2/
+Source0:    http://downloads.sourceforge.net/project/acpid2/%{name}-%{version}.tar.xz
 Source1:    acpid.video.conf
 Source2:    acpid.power.conf
 Source3:    acpid.power.sh
