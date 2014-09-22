@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <getopt.h>
+#include <dirent.h>
 
 #include "acpid.h"
 #include "log.h"
@@ -63,6 +64,8 @@ static int nosocket;
 static int foreground;
 static const char *pidfile = ACPID_PIDFILE;
 static int netlink;
+const char *dropaction = DROP_ACTION;
+int tpmutefix = 0;
 
 int
 main(int argc, char **argv)
@@ -131,7 +134,7 @@ main(int argc, char **argv)
 	}
 
 	/* create our pidfile */
-	if (create_pidfile() < 0) {
+	if (!foreground && create_pidfile() < 0) {
 		exit(EXIT_FAILURE);
 	}
 
@@ -149,11 +152,9 @@ main(int argc, char **argv)
 		readfds = *get_fdset();
 
 		/* wait on data */
-		nready = select(get_highestfd() + 1, &readfds, NULL, NULL, NULL);
+		nready = TEMP_FAILURE_RETRY(select(get_highestfd() + 1, &readfds, NULL, NULL, NULL));
 
-		if (nready < 0  &&  errno == EINTR) {
-			continue;
-		} else if (nready < 0) {
+		if (nready < 0) {
 			acpid_log(LOG_ERR, "select(): %s", strerror(errno));
 			continue;
 		}
@@ -207,6 +208,8 @@ handle_cmdline(int *argc, char ***argv)
 		{"pidfile", 1, 0, 'p'},
 		{"lockfile", 1, 0, 'L'},
 		{"netlink", 0, 0, 'n'},
+		{"dropaction", 1, 0, 'r'},
+		{"tpmutefix", 0, 0, 't'},
 		{"version", 0, 0, 'v'},
 		{"help", 0, 0, 'h'},
 		{NULL, 0, 0, 0},
@@ -225,6 +228,8 @@ handle_cmdline(int *argc, char ***argv)
 		"Use the specified PID file.",		/* pidfile */
 		"Use the specified lockfile to stop processing.", /* lockfile */
 		"Force netlink/input layer mode. (overrides -e)", /* netlink */
+		"Define the pseudo-action to drop an event.", /* dropaction */
+		"Fixup for ThinkPad mute-repeat behaviour.", /* tpmutefix */
 		"Print version information.",		/* version */
 		"Print this message.",			/* help */
 	};
@@ -235,7 +240,7 @@ handle_cmdline(int *argc, char ***argv)
 	for (;;) {
 		int i;
 		i = getopt_long(*argc, *argv,
-		    "c:C:de:flg:m:s:Sp:L:nvh", opts, NULL);
+		    "c:C:de:flg:m:s:Sp:L:nr:tvh", opts, NULL);
 		if (i == -1) {
 			break;
 		}
@@ -281,6 +286,12 @@ handle_cmdline(int *argc, char ***argv)
 		case 'n':
 			netlink = 1;
 			break;
+		case 'r':
+			dropaction = optarg;
+			break;
+		case 't':
+			tpmutefix = 1;
+			break;
 		case 'v':
 			printf(PACKAGE "-" VERSION "\n");
 			exit(EXIT_SUCCESS);
@@ -317,12 +328,22 @@ handle_cmdline(int *argc, char ***argv)
 static void
 close_fds(void)
 {
-	int fd, max;
-	max = sysconf(_SC_OPEN_MAX);
-	for (fd = 3; fd < max; fd++)
-		close(fd);
-}
+    struct dirent *dent;
+    DIR *dirp;
+    char *endp;
+    long fd;
 
+    if ((dirp = opendir("/proc/self/fd")) != NULL) {
+        while ((dent = readdir(dirp)) != NULL) {
+            fd = strtol(dent->d_name, &endp, 10);
+            if (dent->d_name != endp && *endp == '\0' &&
+                fd >= 3 && fd != dirfd(dirp)) {
+                close((int) fd);
+            }
+        }
+        closedir(dirp);
+    }
+}
 static int
 daemonize(void)
 {
@@ -394,14 +415,17 @@ std2null(void)
 	if (!is_socket(STDIN_FILENO)  && 
 			dup2(nullfd, STDIN_FILENO) != STDIN_FILENO) {
 		acpid_log(LOG_ERR, "dup2() stdin: %s", strerror(errno));
+		close(nullfd);
 		return -1;
 	}
 	if (!acpid_debug && dup2(nullfd, STDOUT_FILENO) != STDOUT_FILENO) {
 		acpid_log(LOG_ERR, "dup2() stdout: %s", strerror(errno));
+		close(nullfd);
 		return -1;
 	}
 	if (!acpid_debug && dup2(nullfd, STDERR_FILENO) != STDERR_FILENO) {
 		acpid_log(LOG_ERR, "dup2() stderr: %s", strerror(errno));
+		close(nullfd);
 		return -1;
 	}
 
@@ -444,6 +468,7 @@ void
 clean_exit_with_status(int status)
 {
 	acpid_cleanup_rules(1);
+	delete_all_connections();
 	acpid_log(LOG_NOTICE, "exiting");
 	unlink(pidfile);
 	exit(status);

@@ -45,8 +45,9 @@
 extern int acpid_debug;
 extern int logevents;
 extern const char *progname;
+extern int tpmutefix;
 
-extern int locked();
+extern int locked(void);
 
 extern void clean_exit_with_status(int status);
 

@@ -32,6 +32,8 @@
 #include "event.h"
 #include "connection_list.h"
 
+#include "proc.h"
+
 const char *eventfile = ACPID_EVENTFILE;
 
 static char *read_line(int fd);
@@ -86,7 +88,9 @@ open_proc()
 	int fd;
 	struct connection c;
 	
-	fd = open(eventfile, O_RDONLY);
+	/* O_CLOEXEC: Make sure scripts we exec() (in event.c) don't get our file 
+       descriptors. */
+	fd = open(eventfile, O_RDONLY | O_CLOEXEC);
 	if (fd < 0) {
 		if (errno == ENOENT) {
 			acpid_log(LOG_DEBUG, "Deprecated %s was not found.  "
@@ -98,11 +102,6 @@ open_proc()
 		return -1;
 		
 	}
-
-    /* Make sure scripts we exec() (in event.c) don't get our file 
-       descriptors. */
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
-
 	acpid_log(LOG_DEBUG, "proc fs opened successfully");
 
 	/* add a connection to the list */
@@ -110,7 +109,12 @@ open_proc()
 	c.process = process_proc;
 	c.pathname = NULL;
 	c.kybd = 0;
-	add_connection(&c);
+
+	if (add_connection(&c) < 0) {
+		close(fd);
+		acpid_log(LOG_ERR, "can't add connection for %s", eventfile);
+		return -1;
+	}
 
 	return 0;
 }
@@ -132,8 +136,8 @@ read_line(int fd)
 
 		/* only go to BUFLEN-1 so there will always be a 0 at the end */
 		while (i < BUFLEN-1) {
-			r = read(fd, buf+i, 1);
-			if (r < 0 && errno != EINTR) {
+			r = TEMP_FAILURE_RETRY(read(fd, buf+i, 1));
+			if (r < 0) {
 				/* we should do something with the data */
 				acpid_log(LOG_ERR, "read(): %s",
 					strerror(errno));

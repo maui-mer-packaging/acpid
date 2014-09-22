@@ -45,6 +45,8 @@
 #include "acpi_ids.h"
 #include "connection_list.h"
 
+#include "netlink.h"
+
 static void
 format_netlink(struct nlmsghdr *msg)
 {
@@ -110,7 +112,7 @@ format_netlink(struct nlmsghdr *msg)
 }
 
 /* (based on rtnl_listen() in libnetlink.c) */
-void
+static void
 process_netlink(int fd)
 {
 	int status;
@@ -141,14 +143,10 @@ process_netlink(int fd)
 	iov.iov_len = sizeof(buf);
 	
 	/* read the data into the buffer */
-	status = recvmsg(fd, &msg, 0);
+	status = TEMP_FAILURE_RETRY ( recvmsg(fd, &msg, MSG_CMSG_CLOEXEC) );
 
 	/* if there was a problem, print a message and keep trying */
 	if (status < 0) {
-		/* if we were interrupted by a signal, bail */
-		if (errno == EINTR)
-			return;
-		
 		acpid_log(LOG_ERR, "netlink read error: %s (%d)",
 			strerror(errno), errno);
 		if (++nerrs >= ACPID_MAX_ERRS) {
@@ -167,7 +165,7 @@ process_netlink(int fd)
 	/* check to see if the address length has changed */
 	if (msg.msg_namelen != sizeof(nladdr)) {
 		acpid_log(LOG_WARNING, "netlink unexpected length: "
-			"%d   expected: %d", msg.msg_namelen, sizeof(nladdr));
+			"%d   expected: %zd", msg.msg_namelen, sizeof(nladdr));
 		return;
 	}
 	
@@ -235,6 +233,12 @@ void open_netlink(void)
 	c.process = process_netlink;
 	c.pathname = NULL;
 	c.kybd = 0;
-	add_connection(&c);
+
+	if (add_connection(&c) < 0) {
+		rtnl_close(&rth);
+		acpid_log(LOG_ERR,
+			"can't add connection for generic netlink socket");
+		return;
+	}
 }
 

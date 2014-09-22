@@ -39,7 +39,7 @@
 #include "log.h"
 #include "sock.h"
 #include "ud_socket.h"
-
+#include "event.h"
 /*
  * What is a rule?  It's polymorphic, pretty much.
  */
@@ -63,8 +63,10 @@ struct rule_list {
 	struct rule *head;
 	struct rule *tail;
 };
-static struct rule_list cmd_list;
+
+static struct rule_list drop_list;
 static struct rule_list client_list;
+static struct rule_list cmd_list;
 
 /* rule routines */
 static void enlist_rule(struct rule_list *list, struct rule *r);
@@ -76,13 +78,15 @@ static void free_rule(struct rule *r);
 static void lock_rules(void);
 static void unlock_rules(void);
 static sigset_t *signals_handled(void);
-static struct rule *parse_file(const char *file);
+static struct rule *parse_file(int fd_rule, const char *file);
 static struct rule *parse_client(int client);
 static int do_cmd_rule(struct rule *r, const char *event);
 static int do_client_rule(struct rule *r, const char *event);
 static int safe_write(int fd, const char *buf, int len);
 static char *parse_cmd(const char *cmd, const char *event);
 static int check_escapes(const char *str);
+
+extern const char *dropaction;
 
 /*
  * read in all the configuration files
@@ -92,7 +96,6 @@ acpid_read_conf(const char *confdir)
 {
 	DIR *dir;
 	struct dirent *dirent;
-	char *file = NULL;
 	int nrules = 0;
 	regex_t preg;
 	int rc = 0;
@@ -110,6 +113,7 @@ acpid_read_conf(const char *confdir)
 	/* Compile the regular expression.  This is based on run-parts(8). */
 	rc = regcomp(&preg, "^[a-zA-Z0-9_-]+$", RULE_REGEX_FLAGS);
 	if (rc) {
+		closedir(dir);
 		acpid_log(LOG_ERR, "regcomp(): %d", rc);
 		unlock_rules();
 		return -1;
@@ -117,11 +121,10 @@ acpid_read_conf(const char *confdir)
 
 	/* scan all the files */
 	while ((dirent = readdir(dir))) {
-		int len;
 		struct rule *r;
 		struct stat stat_buf;
-
-		len = strlen(dirent->d_name);
+        char *file = NULL;  /* rename: filename */
+        int fd_rule;
 
 		/* skip "." and ".." */
 		if (strncmp(dirent->d_name, ".", sizeof(dirent->d_name)) == 0)
@@ -129,50 +132,67 @@ acpid_read_conf(const char *confdir)
 		if (strncmp(dirent->d_name, "..", sizeof(dirent->d_name)) == 0)
 			continue;
 
+        if (asprintf(&file, "%s/%s", confdir, dirent->d_name) < 0) {
+            acpid_log(LOG_ERR, "asprintf: %s", strerror(errno));
+            regfree(&preg);
+            closedir(dir);
+            unlock_rules();
+            return -1;
+        }
+
 		/* skip any files that don't match the run-parts convention */
 		if (regexec(&preg, dirent->d_name, 0, NULL, 0) != 0) {
-			acpid_log(LOG_INFO, "skipping conf file %s/%s", 
-				confdir, dirent->d_name);
+			acpid_log(LOG_INFO, "skipping conf file %s", file);
+            free(file);
 			continue;
 		}
 
-		/* Compute the length of the full path name adding one for */
-		/* the slash and one more for the NULL. */
-		len += strlen(confdir) + 2;
+        /* ??? Check for DT_UNKNOWN and do this, then "else if" on not DT_REG
+               and do the same as the !S_ISREG() branch below. */
+        if (dirent->d_type != DT_REG) { /* may be DT_UNKNOWN ...*/
+            /* allow only regular files and symlinks to files */
+            if (fstatat(dirfd(dir), dirent->d_name, &stat_buf, 0) != 0) {
+			    acpid_log(LOG_ERR, "fstatat(%s): %s", file, strerror(errno));
+			    free(file);
+			    continue; /* keep trying the rest of the files */
+		    }
+		    if (!S_ISREG(stat_buf.st_mode)) {
+                acpid_log(LOG_INFO, "skipping non-file %s", file);
+                free(file);
+                continue; /* skip non-regular files */
+            }
+        }
 
-		file = malloc(len);
-		if (!file) {
-			acpid_log(LOG_ERR, "malloc(): %s", strerror(errno));
-			unlock_rules();
-			return -1;
-		}
-		snprintf(file, len, "%s/%s", confdir, dirent->d_name);
-
-		/* allow only regular files and symlinks to files */
-		if (stat(file, &stat_buf) != 0) {
-			acpid_log(LOG_ERR, "stat(%s): %s", file,
-				strerror(errno));
-			free(file);
-			continue; /* keep trying the rest of the files */
-		}
-		if (!S_ISREG(stat_buf.st_mode)) {
-			acpid_log(LOG_INFO, "skipping non-file %s", file);
-			free(file);
-			continue; /* skip non-regular files */
-		}
-
-		r = parse_file(file);
+        /* open the rule file (might want to move this into parse_file()?) */
+		if ((fd_rule = openat(dirfd(dir), dirent->d_name, 
+                              O_RDONLY|O_CLOEXEC|O_NONBLOCK)) == -1) {
+                /* something went _really_ wrong.. Not Gonna Happen(tm) */
+                acpid_log(LOG_ERR, "openat(%s): %s", file, strerror(errno));
+                free(file);
+                /* ??? Too extreme?  Why not just continue? */
+                closedir(dir);
+                regfree(&preg);
+                unlock_rules();
+                return -1;
+        }
+        /* fd is closed by parse_file() */
+		r = parse_file(fd_rule, file);
 		if (r) {
-			enlist_rule(&cmd_list, r);
+			/* if this is a drop rule */
+			if (!strcmp(r->action.cmd, dropaction))
+				enlist_rule(&drop_list, r);
+			else
+				enlist_rule(&cmd_list, r);
 			nrules++;
 		}
 		free(file);
 	}
+
+    regfree(&preg);
 	closedir(dir);
 	unlock_rules();
 
-	acpid_log(LOG_INFO, "%d rule%s loaded",
-	    nrules, (nrules == 1)?"":"s");
+	acpid_log(LOG_INFO, "%d rule%s loaded", nrules, (nrules == 1)?"":"s");
 
 	return 0;
 }
@@ -213,13 +233,22 @@ acpid_cleanup_rules(int do_detach)
 		p = next;
 	}
 
+	/* drop the drop rules */
+	p = drop_list.head;
+	while (p) {
+		next = p->next;
+		delist_rule(&drop_list, p);
+		free_rule(p);
+		p = next;
+	}
+
 	unlock_rules();
 
 	return 0;
 }
 
 static struct rule *
-parse_file(const char *file)
+parse_file(int fd_rule, const char *file)
 {
 	FILE *fp;
 	char buf[512];
@@ -228,7 +257,8 @@ parse_file(const char *file)
 
 	acpid_log(LOG_DEBUG, "parsing conf file %s", file);
 
-	fp = fopen(file, "r");
+    /* r - read-only, e - O_CLOEXEC */
+	fp = fdopen(fd_rule, "re");
 	if (!fp) {
 		acpid_log(LOG_ERR, "fopen(%s): %s", file, strerror(errno));
 		return NULL;
@@ -516,17 +546,17 @@ acpid_close_dead_clients(void)
 }
 
 /*
- * the main hook for propogating events
+ * the main hook for propagating events
  */
 int
 acpid_handle_event(const char *event)
 {
 	struct rule *p;
 	int nrules = 0;
-	struct rule_list *ar[] = { &client_list, &cmd_list, NULL };
+	struct rule_list *ar[] = { &drop_list, &client_list, &cmd_list, NULL };
 	struct rule_list **lp;
 
-	/* make an event be atomic wrt known signals */
+	/* make an event atomic wrt known signals */
 	lock_rules();
 
 	/* scan each rule list for any rules that care about this event */
@@ -545,7 +575,16 @@ acpid_handle_event(const char *event)
 				}
 				nrules++;
 				if (p->type == RULE_CMD) {
-					do_cmd_rule(p, event);
+					if (do_cmd_rule(p, event) == DROP_EVENT) {
+						/* Abort processing if event matches drop rule */
+						if (logevents)
+							acpid_log(LOG_INFO, "event dropped");
+						/* Skip the remaining rules. */
+						while (*++lp)
+							;
+						--lp;
+						break;
+					}
 				} else if (p->type == RULE_CLIENT) {
 					do_client_rule(p, event);
 				} else {
@@ -617,6 +656,9 @@ do_cmd_rule(struct rule *rule, const char *event)
 	pid_t pid;
 	int status;
 	const char *action;
+
+	if (!strcmp(rule->action.cmd, dropaction))
+		return DROP_EVENT;
 
 	pid = fork();
 	switch (pid) {
@@ -710,9 +752,9 @@ safe_write(int fd, const char *buf, int len)
 	int ntries = NTRIES;
 
 	do {
-		r = write(fd, buf+ttl, len-ttl);
+		r = TEMP_FAILURE_RETRY (write(fd, buf+ttl, len-ttl) );
 		if (r < 0) {
-			if (errno != EAGAIN && errno != EINTR) {
+			if (errno != EAGAIN) {
 				/* a legit error */
 				return r;
 			}

@@ -37,9 +37,11 @@
 #include "connection_list.h"
 #include "input_layer.h"
 
+#include "inotify_handler.h"
+
 /*-----------------------------------------------------------------*/
 /* called when an inotify event is received */
-void process_inotify(int fd)
+static void process_inotify(int fd)
 {
 	int bytes;
 	/* union to avoid strict-aliasing problems */
@@ -116,7 +118,7 @@ void open_inotify(void)
 	struct connection c;
 
 	/* set up inotify */
-	fd = inotify_init();
+	fd = inotify_init1(IN_CLOEXEC);
 	
 	if (fd < 0) {
 		acpid_log(LOG_ERR, "inotify_init() failed: %s (%d)",
@@ -143,6 +145,11 @@ void open_inotify(void)
 	c.process = process_inotify;
 	c.pathname = NULL;
 	c.kybd = 0;
-	add_connection(&c);
+
+	if (add_connection(&c) < 0) {
+		close(fd);
+		acpid_log(LOG_ERR, "can't add connection for inotify");
+		return;
+	}
 }
 

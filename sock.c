@@ -20,6 +20,10 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -35,6 +39,8 @@
 #include "ud_socket.h"
 #include "connection_list.h"
 
+#include "sock.h"
+
 const char *socketfile = ACPID_SOCKETFILE;
 const char *socketgroup;
 mode_t socketmode = ACPID_SOCKETMODE;
@@ -47,10 +53,7 @@ int non_root_clients;
 int
 is_socket(int fd)
 {
-	int v;
-	socklen_t l = sizeof(int);
-
-	return (getsockopt(fd, SOL_SOCKET, SO_TYPE, (char *)&v, &l) == 0);
+    return (isfdtype(fd, S_IFSOCK) == 1);
 }
 
 /* accept a new client connection */
@@ -59,7 +62,7 @@ process_sock(int fd)
 {
 	int cli_fd;
 	struct ucred creds;
-	char buf[32];
+	char *buf;
 	static int accept_errors;
 
 	/* accept and add to our lists */
@@ -86,25 +89,13 @@ process_sock(int fd)
 		non_root_clients++;
 	}
 
-    /* don't leak fds when execing */
-	if (fcntl(cli_fd, F_SETFD, FD_CLOEXEC) < 0) {
-		close(cli_fd);
-		acpid_log(LOG_ERR, "fcntl() on client for FD_CLOEXEC: %s", 
-            strerror(errno));
-		return;
-    }
-
-    /* don't allow clients to block this */
-    if (fcntl(cli_fd, F_SETFL, O_NONBLOCK) < 0) {
-		close(cli_fd);
-		acpid_log(LOG_ERR, "fcntl() on client for O_NONBLOCK: %s", 
-            strerror(errno));
-		return;
-    }
-
-    snprintf(buf, sizeof(buf)-1, "%d[%d:%d]",
-		 creds.pid, creds.uid, creds.gid);
-	acpid_add_client(cli_fd, buf);
+    if(asprintf(&buf, "%d[%d:%d]", creds.pid, creds.uid, creds.gid) < 0) {
+        close(cli_fd);
+        acpid_log(LOG_ERR, "asprintf: %s", strerror(errno));
+        return;
+     }
+        acpid_add_client(cli_fd, buf);
+        free(buf);
 }
 
 /* set up the socket for client connections */
@@ -117,20 +108,14 @@ open_sock()
 	/* if this is a socket passed in via stdin by systemd */
 	if (is_socket(STDIN_FILENO)) {
 		fd = STDIN_FILENO;
+		/* ??? Move CLOEXEC and NONBLOCK settings below up to here? */
 	} else {
 		/* create our own socket */
-		fd = ud_create_socket(socketfile);
+		fd = ud_create_socket(socketfile, socketmode);
 		if (fd < 0) {
 			acpid_log(LOG_ERR, "can't open socket %s: %s",
 				socketfile, strerror(errno));
 			exit(EXIT_FAILURE);
-		}
-
-		if (chmod(socketfile, socketmode) < 0) {
-			close(fd);
-			acpid_log(LOG_ERR, "chmod() on socket %s: %s", 
-		        socketfile, strerror(errno));
-			return;
 		}
 
 		/* if we need to change the socket's group, do so */
@@ -143,11 +128,15 @@ open_sock()
 				acpid_log(LOG_ERR, "group %s does not exist", socketgroup);
 				exit(EXIT_FAILURE);
 			}
-			if (stat(socketfile, &buf) < 0) {
+			if (fstat(fd, &buf) < 0) {
 				acpid_log(LOG_ERR, "can't stat %s: %s", 
 		            socketfile, strerror(errno));
 				exit(EXIT_FAILURE);
 			}
+			/* ??? I've tried using fchown(), however it doesn't work here.
+			 *     It also doesn't work before bind().  The GNU docs seem to
+			 *     indicate it isn't supposed to work with sockets. */
+			/* if (fchown(fd, buf.st_uid, gr->gr_gid) < 0) { */
 			if (chown(socketfile, buf.st_uid, gr->gr_gid) < 0) {
 				acpid_log(LOG_ERR, "can't chown %s: %s", 
 		            socketfile, strerror(errno));
@@ -156,7 +145,9 @@ open_sock()
 		}
 	}
 
-	/* don't leak fds when execing */
+	/* Don't leak fds when execing.
+	 * ud_create_socket() already does this, but there is no guarantee that
+	 * a socket sent in via STDIN will have this set. */
 	if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
 		close(fd);
 		acpid_log(LOG_ERR, "fcntl() on socket %s for FD_CLOEXEC: %s", 
@@ -164,7 +155,9 @@ open_sock()
 		return;
 	}
 
-	/* avoid a potential hang */
+	/* Avoid a potential hang.
+	 * ud_create_socket() already does this, but there is no guarantee that
+	 * a socket sent in via STDIN will have this set. */
 	if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
 		close(fd);
 		acpid_log(LOG_ERR, "fcntl() on socket %s for O_NONBLOCK: %s", 
@@ -177,5 +170,11 @@ open_sock()
 	c.process = process_sock;
 	c.pathname = NULL;
 	c.kybd = 0;
-	add_connection(&c);
+
+	if (add_connection(&c) < 0) {
+		close(fd);
+		acpid_log(LOG_ERR, "can't add connection for socket %s",
+		          socketfile);
+		return;
+	}
 }
