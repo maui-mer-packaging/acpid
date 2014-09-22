@@ -1,6 +1,6 @@
 Name: acpid
 Summary: ACPI Event Daemon
-Version: 2.0.14
+Version: 2.0.23
 Release: 1
 Group: System/Daemons
 License: GPLv2+ and BSD
@@ -31,4 +31,3 @@ SubPackages:
       Summary: sample docs and sample scripts for apcid
       Group: Documentation
       Description: Extra sample docs and scripts for acpid.
-

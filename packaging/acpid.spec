@@ -9,7 +9,7 @@ Name:       acpid
 # << macros
 
 Summary:    ACPI Event Daemon
-Version:    2.0.14
+Version:    2.0.23
 Release:    1
 Group:      System/Daemons
 License:    GPLv2+ and BSD
