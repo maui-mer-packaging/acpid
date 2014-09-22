@@ -29,7 +29,6 @@ Source10:    acpid.start.sh
 Source11:    acpid.service
 Source12:    acpid
 Source100:  acpid.yaml
-Patch0:     acpid-2.0.9-makefile.patch
 Requires:   systemd
 Requires(preun): systemd
 Requires(post): systemd
@@ -50,8 +49,6 @@ Extra sample docs and scripts for acpid.
 %prep
 %setup -q -n %{name}-%{version}
 
-# acpid-2.0.9-makefile.patch
-%patch0 -p1
 # >> setup
 # << setup
 
