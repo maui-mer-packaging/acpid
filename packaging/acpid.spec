@@ -37,14 +37,6 @@ Requires(postun): systemd
 %description
 acpid is a daemon that dispatches ACPI events to user-space programs.
 
-%package extra-docs
-Summary:    sample docs and sample scripts for apcid
-Group:      Documentation
-Requires:   %{name} = %{version}-%{release}
-
-%description extra-docs
-Extra sample docs and scripts for acpid.
-
 %prep
 %setup -q -n %{name}-%{version}
 
@@ -135,27 +127,3 @@ systemctl daemon-reload
 %{_mandir}/man8/acpid.8.gz
 %{_mandir}/man8/acpi_listen.8.gz
 # << files
-
-%files extra-docs
-%defattr(-,root,root,-)
-# >> files extra-docs
-%doc %{_defaultdocdir}/acpid/COPYING
-%doc %{_defaultdocdir}/acpid/Changelog
-%doc %{_defaultdocdir}/acpid/README
-%doc %{_defaultdocdir}/acpid/TESTPLAN
-%doc %{_defaultdocdir}/acpid/TODO
-%doc %{_defaultdocdir}/acpid/samples/acpi_handler-conf
-%doc %{_defaultdocdir}/acpid/samples/acpi_handler.sh
-%doc %{_defaultdocdir}/acpid/samples/battery/battery-conf
-%doc %{_defaultdocdir}/acpid/samples/battery/battery.sh
-%doc %{_defaultdocdir}/acpid/samples/panasonic/ac_adapt.pl
-%doc %{_defaultdocdir}/acpid/samples/panasonic/ac_adapter
-%doc %{_defaultdocdir}/acpid/samples/panasonic/hotkey
-%doc %{_defaultdocdir}/acpid/samples/panasonic/hotkey.pl
-%doc %{_defaultdocdir}/acpid/samples/power
-%doc %{_defaultdocdir}/acpid/samples/power.sh
-%doc %{_defaultdocdir}/acpid/samples/powerbtn/powerbtn-conf
-%doc %{_defaultdocdir}/acpid/samples/powerbtn/powerbtn.sh
-%doc %{_defaultdocdir}/acpid/samples/powerbtn/powerbtn.sh.old
-%doc %{_defaultdocdir}/acpid/COPYING
-# << files extra-docs
