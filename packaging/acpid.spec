@@ -124,6 +124,10 @@ systemctl daemon-reload
 %{_bindir}/acpi_listen
 %{_sbindir}/acpid
 %{_sbindir}/acpid-start-script
+%{_sbindir}/kacpimon
+%docdir %{_defaultdocdir}/acpid
+%{_defaultdocdir}/acpid/*
 %{_mandir}/man8/acpid.8.gz
 %{_mandir}/man8/acpi_listen.8.gz
+%{_mandir}/man8/kacpimon.8.gz
 # << files
