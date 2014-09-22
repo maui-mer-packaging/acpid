@@ -21,8 +21,6 @@ Sources:
     - acpid
 Description: acpid is a daemon that dispatches ACPI events to user-space programs.
 
-Configure: none
-Builder: make
 ExclusiveArch: ia64 x86_64 %{ix86}
 SubPackages:
     - Name: extra-docs
